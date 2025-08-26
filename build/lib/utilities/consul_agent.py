@@ -1,0 +1,444 @@
+# =============================================================================
+# agents/host_agent/orchestrator.py
+# =============================================================================
+# 🎯 Purpose:
+# Defines the OrchestratorAgent that uses a Gemini-based LLM to interpret user
+# queries and delegate them to any child A2A agent discovered at startup.
+# Also defines OrchestratorTaskManager to expose this logic via JSON-RPC.
+# =============================================================================
+
+import uuid                         # For generating unique identifiers (e.g., session IDs)
+import logging                      # Standard library for configurable logging
+from abc import ABC, abstractmethod
+
+from dotenv import load_dotenv      # Utility to load environment variables from a .env file
+from google.adk.tools import FunctionTool
+from google.adk.tools.mcp_tool import MCPToolset
+from google.adk.tools.mcp_tool.mcp_session_manager import SseServerParams
+
+from server import task_manager
+from utilities.consul_discovery import ConsulDiscoveryClient
+
+# Load the .env file so that environment variables like GOOGLE_API_KEY
+# are available to the ADK client when creating LLMs
+load_dotenv()
+
+# -----------------------------------------------------------------------------
+# Google ADK / Gemini imports
+# -----------------------------------------------------------------------------
+from google.adk.agents.llm_agent import LlmAgent
+from google.adk.sessions import InMemorySessionService
+# InMemorySessionService: stores session state in memory (for simple demos)
+from google.adk.memory.in_memory_memory_service import InMemoryMemoryService
+# InMemoryMemoryService: optional conversation memory stored in RAM
+from google.adk.artifacts import InMemoryArtifactService
+# InMemoryArtifactService: handles file/blob artifacts (unused here)
+from google.adk.runners import Runner
+# Runner: orchestrates agent, sessions, memory, and tool invocation
+from google.adk.agents.readonly_context import ReadonlyContext
+# ReadonlyContext: passed to system prompt function to read context
+from google.adk.tools.tool_context import ToolContext
+# ToolContext: passed to tool functions for state and actions
+from google.genai import types           
+# types.Content & types.Part: used to wrap user messages for the LLM
+
+# -----------------------------------------------------------------------------
+# A2A server-side infrastructure
+# -----------------------------------------------------------------------------
+from server.task_manager import InMemoryTaskManager
+# InMemoryTaskManager: base class providing in-memory task storage and locking
+
+from models.request import SendTaskRequest, SendTaskResponse
+# Data models for incoming task requests and outgoing responses
+
+from models.task import Message, TaskStatus, TaskState, TextPart
+# Message: encapsulates role+parts; TaskStatus/State: status enums; TextPart: text payload
+
+# -----------------------------------------------------------------------------
+# Connector to child A2A agents
+# -----------------------------------------------------------------------------
+from utilities.agent_connect import AgentConnector
+# AgentConnector: lightweight wrapper around A2AClient to call other agents
+
+from models.agent import AgentCard, AgentSkill
+
+# AgentCard: metadata structure for agent discovery results
+
+# Set up module-level logger for debug/info messages
+logger = logging.getLogger(__name__)
+
+
+class ConsulEnabledAIAgent(ABC):
+    """
+    🤖 Uses a Gemini LLM to route incoming user queries,
+    calling out to any discovered child A2A agents via tools.
+    """
+
+    # Define supported MIME types for input/output
+    SUPPORTED_CONTENT_TYPES = ["text", "text/plain"]
+
+    def __init__(self, discovery: ConsulDiscoveryClient):
+        # Initialize empty collections for agents
+        self.connectors = {}
+        self.cards = {}
+        self.skills = {}
+
+        # Store the discovery client for later use
+        self.discovery = discovery
+
+        # Define the tools available to the agent
+        self._remote_mcp_tools = {}
+        self._mcp_wrappers = {}
+
+        # Build the internal LLM agent with our custom tools and instructions
+        self._agent = self.build_agent()
+
+        # Static user ID for session tracking across calls
+        self._user_id = "orchestrator_user"
+
+        # Runner wires up sessions, memory, artifacts, and handles agent.run()
+        self._runner = Runner(
+            app_name=self._agent.name,
+            agent=self._agent,
+            artifact_service=InMemoryArtifactService(),
+            session_service=InMemorySessionService(),
+            memory_service=InMemoryMemoryService(),
+        )
+
+        # Start the Consul watcher in the background
+        self.initialize()
+
+    def get_remote_mcp_tools(self):
+        """
+        Returns the dictionary of remote MCP tools.
+        This is useful for accessing MCP tools from outside the agent.
+        """
+        return self._remote_mcp_tools
+
+    def initialize(self):
+        import threading
+        # Create and start a daemon thread for the watcher
+        background_thread = threading.Thread(target=self.run_async_watcher, daemon=True)
+        background_thread.start()
+        logger.info("Started Consul watcher in background thread")
+
+    def run_async_watcher(self):
+        import asyncio
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        try:
+            # Run the watch_consul coroutine in this thread's event loop
+            loop.run_until_complete(self.watch_consul())
+        except Exception as e:
+            logger.error(f"Error in Consul watcher thread: {e}")
+        finally:
+            loop.close()
+
+    async def watch_consul(self):
+        """
+        Background task to watch for Consul service changes.
+        This properly awaits the watchConsul coroutine.
+        """
+        logger.info("Starting Consul service watcher")
+        await self.discovery.watch_consul(callback=self.services_changed)
+
+    async def get_tools_async(self, url: str) -> MCPToolset:
+        """Gets tools from the File System MCP Server."""
+        toolset = MCPToolset(
+            connection_params=SseServerParams(
+                url=url,
+            )
+        )
+        print("MCP Toolset created successfully.")
+        return toolset
+
+    async def services_changed(self, subagents_card: {}):
+        """
+        Callback for when the list of agents changes.
+        Updates the connectors and skills based on new agent cards.
+        """
+        logger.debug(f"Service changes detected, updating connectors and skills")
+
+        agents = subagents_card["agents"]
+
+        # Agent card map
+        cards = {card.name: card for card in agents}
+
+        # compare with existing connectors if any need to be removed or updated or added
+        existing_agents = set(self.connectors.keys())
+        new_agents = {card.name for card in agents}
+
+        agent_invalidated = False
+        # Agents to be added (in new list but not in existing)
+        added_agents = new_agents - existing_agents
+        if added_agents:
+            logger.info(f"New agents discovered: {', '.join(added_agents)}")
+            agent_invalidated = True
+            for card in added_agents:
+                # Create a new AgentConnector for each new agent
+                self.create_agent_connector(cards[card])
+
+
+        # Agents to be removed (in existing but not in new list)
+        removed_agents = existing_agents - new_agents
+        if removed_agents:
+            logger.info(f"Agents no longer available: {', '.join(removed_agents)}")
+            agent_invalidated = True
+            for card_name in removed_agents:
+                # Remove the AgentConnector
+                self.remove_agent_connector(card_name)
+
+        # Agents that might be updated (URLs or skills changed)
+        updated_agents = []
+        for card in agents:
+            if card.name in existing_agents:
+                existing_card = self.cards.get(card.name)
+                if existing_card and (existing_card.url != card.url or AgentSkill.compare_skill_lists(existing_card.skills, card.skills)):
+                    agent_invalidated = True
+                    self.create_agent_connector(card)
+
+        if updated_agents:
+            logger.info(f"Agents updated: {', '.join(updated_agents)}")
+            agent_invalidated = True
+
+        # --------------------------------------------------------------
+        # do the same for mcps
+        mcp_servers = subagents_card["mcp_servers"]
+
+        # MCP servers map
+        mcp_servers_map = {mcp_server["name"]: mcp_server["url"] for mcp_server in mcp_servers}
+        existing_mcps = set(self._remote_mcp_tools.keys())
+        new_mcps = {mcp_server["name"] for mcp_server in mcp_servers}
+
+        # MCPs to be added (in new list but not in existing)
+        added_mcps = new_mcps - existing_mcps
+        if added_mcps:
+            logger.info(f"New MCP servers discovered: {', '.join(added_mcps)}")
+            agent_invalidated = True
+            for mcp_name in added_mcps:
+                # Create a new MCPToolset for each new MCP server
+                # connection_params = StreamableHTTPConnectionParams(url=mcp_servers_map[mcp_name])
+                # mcp_toolset = MCPToolset(connection_params=connection_params)
+                self._remote_mcp_tools[mcp_name] = await self.get_tools_async(mcp_servers_map[mcp_name])
+
+        # MCPs to be removed (in existing but not in new list)
+        removed_mcps = existing_mcps - new_mcps
+        if removed_mcps:
+            logger.info(f"MCP servers no longer available: {', '.join(removed_mcps)}")
+            agent_invalidated = True
+            for mcp_name in removed_mcps:
+                # Remove the MCPToolset
+                del self._remote_mcp_tools[mcp_name]
+
+        # MCPs that might be updated (URLs changed)
+        updated_mcps = []
+        for mcp_name, mcp_url in mcp_servers_map.items():
+            if mcp_name in existing_mcps:
+                existing_mcp_toolset = self._remote_mcp_tools.get(mcp_name)
+                # for now we only check if the URL has changed
+                if existing_mcp_toolset and existing_mcp_toolset._connection_params.url != mcp_url:
+                    # Create a new MCPToolset with the updated URL
+                    self._remote_mcp_tools[mcp_name] = await self.get_tools_async(mcp_servers_map[mcp_name])
+                    updated_mcps.append(mcp_name)
+                    agent_invalidated = True
+
+        if agent_invalidated:
+            self._mcp_wrappers = []  # Reset the MCP wrappers list
+            # expand mcp toolset into functions
+            for mcp in self._remote_mcp_tools.values():
+                # if mcp is of type MCPToolset, expand its tools into functions
+                if isinstance(mcp, MCPToolset):
+                    tools = await mcp.get_tools()
+                    for tool in tools:
+                        # Add each tool as a function to the agent
+                        fn = self._make_wrapper(tool)
+                        self._mcp_wrappers.append(FunctionTool(fn))
+
+            logger.info("Agent configuration changed, rebuilding agent and runner")
+            # If any agents or MCPs were added/removed/updated, rebuild the agent
+            # Rebuild the agent with updated tools
+            self._agent = self.build_agent()
+            # Update the runner with the new agent
+            self._runner = Runner(
+                app_name=self._agent.name,
+                agent=self._agent,
+                artifact_service=InMemoryArtifactService(),
+                session_service=InMemorySessionService(),
+                memory_service=InMemoryMemoryService(),
+            )
+
+
+    def remove_agent_connector(self, card_name: str) -> None:
+        """
+        Remove the AgentConnector for the specified agent name.
+        This is useful for cleaning up connectors when agents are no longer available.
+
+        Args:
+            card_name: The AgentCard representing the agent to remove
+        """
+        if card_name in self.connectors:
+            del self.connectors[card_name]
+            del self.cards[card_name]
+            del self.skills[card_name]
+            logger.info(f"Removed agent connector for {card_name}")
+        else:
+            logger.warning(f"Attempted to remove non-existent agent connector: {card_name}")
+
+    def create_agent_connector(self, card: AgentCard) -> None:
+        """
+        Create a new AgentConnector for the specified agent card.
+        This is used to add new agents discovered via Consul.
+        Args:
+            card: The AgentCard representing the agent to connect to
+        """
+        if card.name in self.connectors:
+            logger.info(f"Agent connector for {card.name} already exists, updating it.")
+        self.connectors[card.name] = AgentConnector(card.name, card.url)
+        self.cards[card.name] = card
+        self.skills[card.name] = card.skills
+
+    def _make_wrapper(self, tool):  # Factory creates a wrapper for a given MCPTool
+        # Define an async function that accepts a single dict of args
+        async def wrapper(args: dict) -> str:
+            # Call the tool's run() to execute MCP command
+            return await tool.run(args)
+
+        # Name the wrapper so ADK can refer to it by the tool's name
+        wrapper.__name__ = tool.name
+        # updated (13/Jun/25) also add the tool description so the agent can read it
+        wrapper.__doc__ = tool.description or f"Tool wrapper for MCP tool: {tool.name}"
+        return wrapper
+
+    @abstractmethod
+    def build_agent(self) -> LlmAgent:
+        pass
+
+    def getTaskManager(self) -> task_manager:
+        """
+        Returns an instance of ConsulTaskManager that wraps the agent's invoke logic.
+        This allows the agent to be used as a task manager for A2A server requests.
+        """
+        return ConsulTaskManager(self)
+
+    async def invoke(self, query: str, session_id: str) -> str:
+        """
+        Main entry: receives a user query + session_id,
+        sets up or retrieves a session, wraps the query for the LLM,
+        runs the Runner (with tools enabled), and returns the final text.
+        Note - function updated 28 May 2025
+        Summary of changes:
+        1. Agent's invoke method is made async
+        2. All async calls (get_session, create_session, run_async) 
+            are awaited inside invoke method
+        3. task manager's on_send_task updated to await the invoke call
+
+        Reason - get_session and create_session are async in the 
+        "Current" Google ADK version and were synchronous earlier 
+        when this lecture was recorded. This is due to a recent change 
+        in the Google ADK code 
+        https://github.com/google/adk-python/commit/1804ca39a678433293158ec066d44c30eeb8e23b
+
+        """
+        # Attempt to reuse an existing session
+        session = await self._runner.session_service.get_session(
+            app_name=self._agent.name,
+            user_id=self._user_id,
+            session_id=session_id
+        )
+        # Create new if not found
+        if session is None:
+            session = await self._runner.session_service.create_session(
+                app_name=self._agent.name,
+                user_id=self._user_id,
+                session_id=session_id,
+                state={}
+            )
+
+        # Wrap the user query in a types.Content message
+        content = types.Content(
+            role="user",
+            parts=[types.Part.from_text(text=query)]
+        )
+
+        # 🚀 Run the agent using the Runner and collect the last event
+        last_event = None
+        async for event in self._runner.run_async(
+            user_id=self._user_id,
+            session_id=session.id,
+            new_message=content
+        ):
+            last_event = event
+
+        # 🧹 Fallback: return empty string if something went wrong
+        if not last_event or not last_event.content or not last_event.content.parts:
+            return ""
+
+        # 📤 Extract and join all text responses into one string
+        return "\n".join([p.text for p in last_event.content.parts if p.text])
+
+    async def _transform_text(
+            self,
+            text: str,
+            instruction: str,
+            tool_context: ToolContext
+    ) -> str:
+        """
+        Transform text using the LLM according to provided instructions.
+        """
+        # Reuse existing session from tool context
+        state = tool_context.state
+        session_id = state.get("session_id", str(uuid.uuid4()))
+
+        # Create prompt for transformation
+        transform_prompt = (
+            f"Transform the following text according to these instructions:\n"
+            f"INSTRUCTIONS: {instruction}\n\n"
+            f"TEXT TO TRANSFORM:\n{text}\n\n"
+            f"TRANSFORMED TEXT:"
+        )
+
+        # Use the agent's invoke method to process the transformation
+        result = await self.invoke(transform_prompt, session_id)
+        return result
+
+class ConsulTaskManager(InMemoryTaskManager):
+    """
+    🪄 TaskManager wrapper: exposes OrchestratorAgent.invoke() over the
+    A2A JSON-RPC `tasks/send` endpoint, handling in-memory storage and
+    response formatting.
+    """
+    def __init__(self, agent: ConsulEnabledAIAgent):
+        super().__init__()       # Initialize base in-memory storage
+        self.agent = agent       # Store our orchestrator logic
+
+    def _get_user_text(self, request: SendTaskRequest) -> str:
+        """
+        Helper: extract the user's raw input text from the request object.
+        """
+        return request.params.message.parts[0].text
+
+    async def on_send_task(self, request: SendTaskRequest) -> SendTaskResponse:
+        """
+        Called by the A2A server when a new task arrives:
+        1. Store the incoming user message
+        2. Invoke the OrchestratorAgent to get a response
+        3. Append response to history, mark completed
+        4. Return a SendTaskResponse with the full Task
+        """
+        logger.info(f"OrchestratorTaskManager received task {request.params.id}")
+
+        # Step 1: save the initial message
+        task = await self.upsert_task(request.params)
+
+        # Step 2: run orchestration logic
+        user_text = self._get_user_text(request)
+        response_text = await self.agent.invoke(user_text, request.params.sessionId)
+
+        # Step 3: wrap the LLM output into a Message
+        reply = Message(role="agent", parts=[TextPart(text=response_text)])
+        async with self.lock:
+            task.status = TaskStatus(state=TaskState.COMPLETED)
+            task.history.append(reply)
+
+        # Step 4: return structured response
+        return SendTaskResponse(id=request.id, result=task)
