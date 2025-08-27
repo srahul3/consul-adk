@@ -19,29 +19,37 @@
 # 📚 Standard Python Imports
 # -----------------------------------------------------------------------------
 
-from abc import ABC, abstractmethod        # Lets us define abstract base classes (like an interface)
-from typing import Dict                    # Dict is a dictionary type for storing key-value pairs
-import asyncio                             # Used here for locks to safely handle concurrency (async operations)
+import asyncio  # Used here for locks to safely handle concurrency (async operations)
+from abc import (  # Lets us define abstract base classes (like an interface)
+    ABC,
+    abstractmethod,
+)
+from typing import Dict  # Dict is a dictionary type for storing key-value pairs
 
+from models.request import (  # For sending tasks to the agent; For querying task info from the agent
+    GetTaskRequest,
+    GetTaskResponse,
+    SendTaskRequest,
+    SendTaskResponse,
+)
+from models.task import (  # Task and input models; Task metadata and history objects
+    Message,
+    Task,
+    TaskQueryParams,
+    TaskSendParams,
+    TaskState,
+    TaskStatus,
+)
 
 # -----------------------------------------------------------------------------
 # 📦 Project Imports: Request and Task Models
 # -----------------------------------------------------------------------------
 
-from models.request import (
-    SendTaskRequest, SendTaskResponse,    # For sending tasks to the agent
-    GetTaskRequest, GetTaskResponse       # For querying task info from the agent
-)
-
-from models.task import (
-    Task, TaskSendParams, TaskQueryParams,  # Task and input models
-    TaskStatus, TaskState, Message          # Task metadata and history objects
-)
-
 
 # -----------------------------------------------------------------------------
 # 🧩 TaskManager (Abstract Base Class)
 # -----------------------------------------------------------------------------
+
 
 class TaskManager(ABC):
     """
@@ -69,6 +77,7 @@ class TaskManager(ABC):
 # 🧠 InMemoryTaskManager
 # -----------------------------------------------------------------------------
 
+
 class InMemoryTaskManager(TaskManager):
     """
     🧠 A simple, temporary task manager that stores everything in memory (RAM).
@@ -82,8 +91,12 @@ class InMemoryTaskManager(TaskManager):
     """
 
     def __init__(self):
-        self.tasks: Dict[str, Task] = {}   # 🗃️ Dictionary where key = task ID, value = Task object
-        self.lock = asyncio.Lock()         # 🔐 Async lock to ensure two requests don't modify data at the same time
+        self.tasks: Dict[str, Task] = (
+            {}
+        )  # 🗃️ Dictionary where key = task ID, value = Task object
+        self.lock = (
+            asyncio.Lock()
+        )  # 🔐 Async lock to ensure two requests don't modify data at the same time
 
     # -------------------------------------------------------------------------
     # 💾 upsert_task: Create or update a task in memory
@@ -99,14 +112,16 @@ class InMemoryTaskManager(TaskManager):
             Task – the newly created or updated task
         """
         async with self.lock:
-            task = self.tasks.get(params.id)  # Try to find an existing task with this ID
+            task = self.tasks.get(
+                params.id
+            )  # Try to find an existing task with this ID
 
             if task is None:
                 # If task doesn't exist, create it with a "submitted" status
                 task = Task(
                     id=params.id,
                     status=TaskStatus(state=TaskState.SUBMITTED),
-                    history=[params.message]
+                    history=[params.message],
                 )
                 self.tasks[params.id] = task
             else:
@@ -147,12 +162,16 @@ class InMemoryTaskManager(TaskManager):
 
             if not task:
                 # If task not found, return a structured error
-                return GetTaskResponse(id=request.id, error={"message": "Task not found"})
+                return GetTaskResponse(
+                    id=request.id, error={"message": "Task not found"}
+                )
 
             # Optional: Trim the history to only show the last N messages
             task_copy = task.model_copy()  # Make a copy so we don't affect the original
             if query.historyLength is not None:
-                task_copy.history = task_copy.history[-query.historyLength:]  # Get last N messages
+                task_copy.history = task_copy.history[
+                    -query.historyLength :
+                ]  # Get last N messages
             else:
                 task_copy.history = task_copy.history
 

@@ -16,12 +16,12 @@
 # Imports
 # -----------------------------------------------------------------------------
 
+# List type hint for declaring list fields
+from typing import List
+
 # BaseModel is a powerful base class from Pydantic.
 # It automatically validates and converts input data into Python types
 from pydantic import BaseModel
-
-# List type hint for declaring list fields
-from typing import List
 
 
 # -----------------------------------------------------------------------------
@@ -70,7 +70,9 @@ class AgentSkill(BaseModel):
     outputModes: List[str] | None = None
 
     @staticmethod
-    def compare_skill_lists(skills1: List['AgentSkill'], skills2: List['AgentSkill']) -> bool:
+    def compare_skill_lists(
+        skills1: List["AgentSkill"], skills2: List["AgentSkill"]
+    ) -> bool:
         """
         Compare two lists of AgentSkill objects for equality.
 
@@ -133,6 +135,7 @@ class AgentSkill(BaseModel):
 
         # All skills are equivalent
         return True
+
 
 # -----------------------------------------------------------------------------
 # AgentCard

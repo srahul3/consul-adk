@@ -6,10 +6,10 @@
 # each agent's metadata (AgentCard) to enable dynamic service discovery.
 # =============================================================================
 
-import os
 import json
 import logging
-from typing import List, Dict, Any
+import os
+from typing import Any, Dict, List
 
 import httpx
 from httpx import QueryParams
@@ -34,7 +34,14 @@ class ConsulDiscoveryClient:
         application_port (str): Port where the application is running.
     """
 
-    def __init__(self, id: str, application_host: str, application_port: str, consul_address: str = None, consul_token: str = None) -> None:
+    def __init__(
+        self,
+        id: str,
+        application_host: str,
+        application_port: str,
+        consul_address: str = None,
+        consul_token: str = None,
+    ) -> None:
         """
         Initialize the DiscoveryClient with Consul connection details.
 
@@ -47,12 +54,15 @@ class ConsulDiscoveryClient:
             consul_token (str, optional): Consul authentication token.
         """
         self.consul_address = consul_address or os.environ.get(
-            "CONSUL_HTTP_ADDR", "http://localhost:8500")
+            "CONSUL_HTTP_ADDR", "http://localhost:8500"
+        )
         self.consul_token = consul_token or os.environ.get("CONSUL_HTTP_TOKEN", "")
         self.id = id
         self.application_host = application_host
         self.application_port = application_port
-        self.networking = os.environ.get("NETWORKING", "address") # "address" or "dns" or "transparent-proxy"
+        self.networking = os.environ.get(
+            "NETWORKING", "address"
+        )  # "address" or "dns" or "transparent-proxy"
         logger.info(f"Consul networking is using: {self.networking}")
 
     async def watch_consul(self, callback=None, interval=60) -> None:
@@ -67,7 +77,9 @@ class ConsulDiscoveryClient:
                 Defaults to 60 seconds.
         """
         if not callback:
-            logger.warning("Watching Consul services without a callback function has no effect.")
+            logger.warning(
+                "Watching Consul services without a callback function has no effect."
+            )
             return
 
         index = None  # Used for blocking queries
@@ -91,7 +103,7 @@ class ConsulDiscoveryClient:
                         f"{self.consul_address}/v1/catalog/services",
                         params=params,
                         headers=headers,
-                        timeout=40.0  # Slightly longer than wait time
+                        timeout=40.0,  # Slightly longer than wait time
                     )
                     response.raise_for_status()
 
@@ -110,22 +122,21 @@ class ConsulDiscoveryClient:
                     agent_cards = await self.list_agent_cards(services=services)
                     mcp_servers = await self.list_mcp_servers(services=services)
 
-
                     # Call the callback with the updated agent cards
                     if callback:
                         try:
                             # Try calling with positional arguments first
-                            await callback({
-                                "agents": agent_cards,
-                                "mcp_servers": mcp_servers
-                            })
+                            await callback(
+                                {"agents": agent_cards, "mcp_servers": mcp_servers}
+                            )
                         except TypeError:
                             # If that fails, try with the named parameter
-                            await callback(subagents_card={
-                                "agents": agent_cards,
-                                "mcp_servers": mcp_servers
-                            })
-
+                            await callback(
+                                subagents_card={
+                                    "agents": agent_cards,
+                                    "mcp_servers": mcp_servers,
+                                }
+                            )
 
             except Exception as e:
                 logger.error(f"Error watching Consul services: {e}")
@@ -133,6 +144,7 @@ class ConsulDiscoveryClient:
 
                 # Wait before retrying on error
                 import asyncio
+
                 await asyncio.sleep(interval)
 
     async def _get_services_from_consul(self) -> List[Any]:
@@ -153,7 +165,7 @@ class ConsulDiscoveryClient:
                 response = await client.get(
                     f"{self.consul_address}/v1/catalog/services",
                     headers=headers,
-                    timeout=5.0
+                    timeout=5.0,
                 )
                 response.raise_for_status()
                 service_names = response.json()
@@ -163,7 +175,9 @@ class ConsulDiscoveryClient:
                     try:
                         # Check if this service is allowed to talk to this service using Consul intentions
                         try:
-                            intentions_check_url = f"{self.consul_address}/v1/connect/intentions/check"
+                            intentions_check_url = (
+                                f"{self.consul_address}/v1/connect/intentions/check"
+                            )
                             intentions_payload = {
                                 "source": self.id,
                                 "destination": service_name,
@@ -177,23 +191,26 @@ class ConsulDiscoveryClient:
                                     intentions_check_url,
                                     params=params,
                                     headers=intentions_headers,
-                                    timeout=5.0
+                                    timeout=5.0,
                                 )
                                 intentions_response.raise_for_status()
                                 intentions_result = intentions_response.json()
                                 if not intentions_result.get("Allowed", False):
-                                    logger.debug(f"Intention denied: {self.id} -> {service_name}")
+                                    logger.debug(
+                                        f"Intention denied: {self.id} -> {service_name}"
+                                    )
                                     continue  # Skip this instance if not allowed
                         except Exception as e:
                             logger.warning(
-                                f"Failed to check intentions for {self.id} -> {service_name}: {e}")
+                                f"Failed to check intentions for {self.id} -> {service_name}: {e}"
+                            )
                             continue
 
                         # Get service health status - this includes health check info
                         health_response = await client.get(
                             f"{self.consul_address}/v1/health/service/{service_name}",
                             headers=headers,
-                            timeout=5.0
+                            timeout=5.0,
                         )
                         health_response.raise_for_status()
                         health_data = health_response.json()
@@ -202,7 +219,10 @@ class ConsulDiscoveryClient:
                         healthy_instances = []
                         for instance in health_data:
                             # Check if all health checks are passing
-                            is_healthy = all(check.get("Status") == "passing" for check in instance.get("Checks", []))
+                            is_healthy = all(
+                                check.get("Status") == "passing"
+                                for check in instance.get("Checks", [])
+                            )
                             if is_healthy:
                                 service_data = instance.get("Service", {})
 
@@ -210,24 +230,28 @@ class ConsulDiscoveryClient:
                                 transformed_service = {
                                     "ServiceID": service_data.get("ID", "N/A"),
                                     "ServiceName": service_data.get("Service", "N/A"),
-                                    "ServiceAddress": service_data.get("Address", "127.0.0.1"),
+                                    "ServiceAddress": service_data.get(
+                                        "Address", "127.0.0.1"
+                                    ),
                                     "ServicePort": service_data.get("Port", "80"),
                                     "ServiceMeta": service_data.get("Meta", {}),
-                                    "ServiceTags": service_data.get("Tags", [])
+                                    "ServiceTags": service_data.get("Tags", []),
                                 }
                                 healthy_instances.append(transformed_service)
                                 # if one healthy instance is found, we can stop checking further instances
                                 break
 
                         if not healthy_instances:
-                            logger.warning(f"No healthy instances found for service {service_name}.")
+                            logger.warning(
+                                f"No healthy instances found for service {service_name}."
+                            )
                             continue
 
                         services.extend(healthy_instances)
                     except Exception as e:
-                        logger.warning(f"Failed to get details for service {service_name}: {e}")
-
-
+                        logger.warning(
+                            f"Failed to get details for service {service_name}: {e}"
+                        )
 
             # print the services for debugging
             # print("Healthy services retrieved from Consul:", json.dumps(services, indent=2))
@@ -281,11 +305,15 @@ class ConsulDiscoveryClient:
                         continue
 
                     if "agent-type" not in service["ServiceMeta"]:
-                        logger.debug(f"Service {service.get('ServiceName', 'unknown')} does not have 'agent-type' metadata. Skipping.")
+                        logger.debug(
+                            f"Service {service.get('ServiceName', 'unknown')} does not have 'agent-type' metadata. Skipping."
+                        )
                         continue
 
                     if service["ServiceMeta"]["agent-type"] != "ai-agent":
-                        logger.debug(f"Service {service.get('ServiceName', 'unknown')} is not an AI agent. Skipping.")
+                        logger.debug(
+                            f"Service {service.get('ServiceName', 'unknown')} is not an AI agent. Skipping."
+                        )
                         continue
 
                     # Try to get service address and port
@@ -340,11 +368,15 @@ class ConsulDiscoveryClient:
                         continue
 
                     if "agent-type" not in service["ServiceMeta"]:
-                        logger.debug(f"Service {service.get('ServiceName', 'unknown')} does not have 'agent-type' metadata. Skipping.")
+                        logger.debug(
+                            f"Service {service.get('ServiceName', 'unknown')} does not have 'agent-type' metadata. Skipping."
+                        )
                         continue
 
                     if service["ServiceMeta"]["agent-type"] != "ai-mcp":
-                        logger.debug(f"Service {service.get('ServiceName', 'unknown')} is not an AI mcp. Skipping.")
+                        logger.debug(
+                            f"Service {service.get('ServiceName', 'unknown')} is not an AI mcp. Skipping."
+                        )
                         continue
 
                     # Try to get service address and port
@@ -365,15 +397,16 @@ class ConsulDiscoveryClient:
                     else:
                         url = f"http://{address}:{port}/sse"
 
-                    cards.append({
-                        "name": service.get("ServiceName"),
-                        "address": service.get("ServiceAddress"),
-                        "port": service.get("ServicePort"),
-                        "meta": service.get("ServiceMeta", {}),
-                        "tags": service.get("ServiceTags", []),
-                        "url": url,
-                    })
-
+                    cards.append(
+                        {
+                            "name": service.get("ServiceName"),
+                            "address": service.get("ServiceAddress"),
+                            "port": service.get("ServicePort"),
+                            "meta": service.get("ServiceMeta", {}),
+                            "tags": service.get("ServiceTags", []),
+                            "url": url,
+                        }
+                    )
 
         return cards
 
@@ -387,7 +420,9 @@ class ConsulDiscoveryClient:
         # Use the instance variables instead of parameters
         consul_address = self.consul_address
         consul_token = self.consul_token
-        parent_ai_agent_id = os.environ.get("PARENT_AI_AGENT_ID", default="orchestrator_agent")
+        parent_ai_agent_id = os.environ.get(
+            "PARENT_AI_AGENT_ID", default="orchestrator_agent"
+        )
 
         headers = {}
         if consul_token:
@@ -410,9 +445,9 @@ class ConsulDiscoveryClient:
                     "Name": "HTTP Health Check",
                     "HTTP": f"http://{self.application_host}:{self.application_port}/health",
                     "Interval": "10s",
-                    "Timeout": "1s"
+                    "Timeout": "1s",
                 }
-            ]
+            ],
         }
 
         # print the service data for debugging
@@ -423,7 +458,7 @@ class ConsulDiscoveryClient:
                 f"{consul_address}/v1/agent/service/register",
                 json=service_data,
                 headers=headers,
-                timeout=5.0
+                timeout=5.0,
             )
             response.raise_for_status()
             logger.info(f"Agent {agent.name} registered successfully with Consul.")

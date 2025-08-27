@@ -7,11 +7,12 @@
 # from low-level HTTP details and HTTP client setup.
 # =============================================================================
 
-import uuid                           # Standard library for generating unique IDs
-import logging                        # Standard library for configurable logging
+import logging  # Standard library for configurable logging
+import uuid  # Standard library for generating unique IDs
 
 # Import our custom A2AClient which handles JSON-RPC task requests
 from client.client import A2AClient
+
 # Import Task model to represent the full task response
 from models.task import Task
 
@@ -61,16 +62,18 @@ class AgentConnector:
             "id": task_id,
             "sessionId": session_id,
             "message": {
-                "role": "user",                # Indicates this message is from the user
-                "parts": [                       # Wrap the text in a list of parts
+                "role": "user",  # Indicates this message is from the user
+                "parts": [  # Wrap the text in a list of parts
                     {"type": "text", "text": message}
-                ]
-            }
+                ],
+            },
         }
 
         # Use the A2AClient to send the task asynchronously and await the response
         task_result = await self.client.send_task(payload)
         # Log receipt of the completed task for debugging/tracing
-        logger.info(f"AgentConnector: received response from {self.name} for task {task_id}")
+        logger.info(
+            f"AgentConnector: received response from {self.name} for task {task_id}"
+        )
         # Return the Task Pydantic model for further processing by the orchestrator
         return task_result

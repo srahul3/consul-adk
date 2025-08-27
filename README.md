@@ -1,10 +1,12 @@
-# consul-ai-agent-sdk
-This SDK helps you build AI agents capable of auto-configuring other AI Agents and MCP Servers. It is based on Google's A2A.
+# consul-adk
+This is an AI Agent Development Kit(ADK) built on top of Google ADK to implement Agentic Service Mesh. 
+Using this and Consul CE/ENT, you can discover and scale the Agents and MCP servers and create a desired agent graph using Service intentions.
+The ADK help to create the desired client's for the Agents and MCP servers as soon as the intentions are defined in Consul.
 
 ## Installation
 
 ```bash
-pip install consul-ai-agent-sdk
+pip install consul-adk
 ```
 
 ## Usage Example

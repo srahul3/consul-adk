@@ -7,11 +7,11 @@
 # Also defines OrchestratorTaskManager to expose this logic via JSON-RPC.
 # =============================================================================
 
-import uuid                         # For generating unique identifiers (e.g., session IDs)
-import logging                      # Standard library for configurable logging
+import logging  # Standard library for configurable logging
+import uuid  # For generating unique identifiers (e.g., session IDs)
 from abc import ABC, abstractmethod
 
-from dotenv import load_dotenv      # Utility to load environment variables from a .env file
+from dotenv import load_dotenv  # Utility to load environment variables from a .env file
 from google.adk.tools import FunctionTool
 from google.adk.tools.mcp_tool import MCPToolset
 from google.adk.tools.mcp_tool.mcp_session_manager import SseServerParams
@@ -26,41 +26,51 @@ load_dotenv()
 # -----------------------------------------------------------------------------
 # Google ADK / Gemini imports
 # -----------------------------------------------------------------------------
-from google.adk.agents.llm_agent import LlmAgent
-from google.adk.sessions import InMemorySessionService
-# InMemorySessionService: stores session state in memory (for simple demos)
-from google.adk.memory.in_memory_memory_service import InMemoryMemoryService
-# InMemoryMemoryService: optional conversation memory stored in RAM
-from google.adk.artifacts import InMemoryArtifactService
-# InMemoryArtifactService: handles file/blob artifacts (unused here)
-from google.adk.runners import Runner
+from google.adk.agents.llm_agent import LlmAgent, ToolUnion
+
 # Runner: orchestrates agent, sessions, memory, and tool invocation
 from google.adk.agents.readonly_context import ReadonlyContext
+
+# InMemoryMemoryService: optional conversation memory stored in RAM
+from google.adk.artifacts import InMemoryArtifactService
+
+# InMemorySessionService: stores session state in memory (for simple demos)
+from google.adk.memory.in_memory_memory_service import InMemoryMemoryService
+
+# InMemoryArtifactService: handles file/blob artifacts (unused here)
+from google.adk.runners import Runner
+from google.adk.sessions import InMemorySessionService
+
 # ReadonlyContext: passed to system prompt function to read context
 from google.adk.tools.tool_context import ToolContext
+
 # ToolContext: passed to tool functions for state and actions
-from google.genai import types           
-# types.Content & types.Part: used to wrap user messages for the LLM
+from google.genai import types
+
+from models.agent import AgentCard, AgentSkill
+from models.request import SendTaskRequest, SendTaskResponse
+from models.task import Message, TaskState, TaskStatus, TextPart
 
 # -----------------------------------------------------------------------------
 # A2A server-side infrastructure
 # -----------------------------------------------------------------------------
 from server.task_manager import InMemoryTaskManager
-# InMemoryTaskManager: base class providing in-memory task storage and locking
-
-from models.request import SendTaskRequest, SendTaskResponse
-# Data models for incoming task requests and outgoing responses
-
-from models.task import Message, TaskStatus, TaskState, TextPart
-# Message: encapsulates role+parts; TaskStatus/State: status enums; TextPart: text payload
 
 # -----------------------------------------------------------------------------
 # Connector to child A2A agents
 # -----------------------------------------------------------------------------
 from utilities.agent_connect import AgentConnector
+
+# types.Content & types.Part: used to wrap user messages for the LLM
+
+# InMemoryTaskManager: base class providing in-memory task storage and locking
+
+# Data models for incoming task requests and outgoing responses
+
+# Message: encapsulates role+parts; TaskStatus/State: status enums; TextPart: text payload
+
 # AgentConnector: lightweight wrapper around A2AClient to call other agents
 
-from models.agent import AgentCard, AgentSkill
 
 # AgentCard: metadata structure for agent discovery results
 
@@ -78,6 +88,9 @@ class ConsulEnabledAIAgent(ABC):
     SUPPORTED_CONTENT_TYPES = ["text", "text/plain"]
 
     def __init__(self, discovery: ConsulDiscoveryClient):
+        # is orchestrator agent
+        self.is_orchestrator = True
+
         # Initialize empty collections for agents
         self.connectors = {}
         self.cards = {}
@@ -89,6 +102,9 @@ class ConsulEnabledAIAgent(ABC):
         # Define the tools available to the agent
         self._remote_mcp_tools = {}
         self._mcp_wrappers = {}
+
+        # User defined tools
+        self._user_defined_tools = []
 
         # Build the internal LLM agent with our custom tools and instructions
         self._agent = self.build_agent()
@@ -108,6 +124,33 @@ class ConsulEnabledAIAgent(ABC):
         # Start the Consul watcher in the background
         self.initialize()
 
+    def set_orchestrator(self, val: bool):
+        self.is_orchestrator = val
+
+    def get_llm_tools(self) -> list[ToolUnion]:
+        """
+        Returns the list of tools available to the LLM agent,
+        including built-in tools and any user-defined tools.
+        """
+        # Built-in tools for orchestrator functionality
+        built_in_tools = [
+            FunctionTool(self._list_agents),
+            FunctionTool(self._agent_skills),
+            FunctionTool(self._delegate_task, is_async=True),
+            FunctionTool(self._tell_time),
+        ]
+
+        # Combine built-in tools with MCP wrappers and user-defined tools
+        if self.is_orchestrator:
+            all_tools = built_in_tools + self._user_defined_tools
+        else:
+            all_tools = self._user_defined_tools
+        return all_tools
+
+    def append_user_defined_tool(self, tool: ToolUnion):
+        self._user_defined_tools.append(tool)
+
+
     def get_remote_mcp_tools(self):
         """
         Returns the dictionary of remote MCP tools.
@@ -117,6 +160,7 @@ class ConsulEnabledAIAgent(ABC):
 
     def initialize(self):
         import threading
+
         # Create and start a daemon thread for the watcher
         background_thread = threading.Thread(target=self.run_async_watcher, daemon=True)
         background_thread.start()
@@ -124,6 +168,7 @@ class ConsulEnabledAIAgent(ABC):
 
     def run_async_watcher(self):
         import asyncio
+
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
         try:
@@ -142,7 +187,7 @@ class ConsulEnabledAIAgent(ABC):
         logger.info("Starting Consul service watcher")
         await self.discovery.watch_consul(callback=self.services_changed)
 
-    async def get_tools_async(self, url: str) -> MCPToolset:
+    async def create_mcp_tool(self, url: str) -> MCPToolset:
         """Gets tools from the File System MCP Server."""
         toolset = MCPToolset(
             connection_params=SseServerParams(
@@ -178,7 +223,6 @@ class ConsulEnabledAIAgent(ABC):
                 # Create a new AgentConnector for each new agent
                 self.create_agent_connector(cards[card])
 
-
         # Agents to be removed (in existing but not in new list)
         removed_agents = existing_agents - new_agents
         if removed_agents:
@@ -193,7 +237,10 @@ class ConsulEnabledAIAgent(ABC):
         for card in agents:
             if card.name in existing_agents:
                 existing_card = self.cards.get(card.name)
-                if existing_card and (existing_card.url != card.url or AgentSkill.compare_skill_lists(existing_card.skills, card.skills)):
+                if existing_card and (
+                    existing_card.url != card.url
+                    or AgentSkill.compare_skill_lists(existing_card.skills, card.skills)
+                ):
                     agent_invalidated = True
                     self.create_agent_connector(card)
 
@@ -206,7 +253,9 @@ class ConsulEnabledAIAgent(ABC):
         mcp_servers = subagents_card["mcp_servers"]
 
         # MCP servers map
-        mcp_servers_map = {mcp_server["name"]: mcp_server["url"] for mcp_server in mcp_servers}
+        mcp_servers_map = {
+            mcp_server["name"]: mcp_server["url"] for mcp_server in mcp_servers
+        }
         existing_mcps = set(self._remote_mcp_tools.keys())
         new_mcps = {mcp_server["name"] for mcp_server in mcp_servers}
 
@@ -219,7 +268,9 @@ class ConsulEnabledAIAgent(ABC):
                 # Create a new MCPToolset for each new MCP server
                 # connection_params = StreamableHTTPConnectionParams(url=mcp_servers_map[mcp_name])
                 # mcp_toolset = MCPToolset(connection_params=connection_params)
-                self._remote_mcp_tools[mcp_name] = await self.get_tools_async(mcp_servers_map[mcp_name])
+                self._remote_mcp_tools[mcp_name] = await self.create_mcp_tool(
+                    mcp_servers_map[mcp_name]
+                )
 
         # MCPs to be removed (in existing but not in new list)
         removed_mcps = existing_mcps - new_mcps
@@ -236,9 +287,14 @@ class ConsulEnabledAIAgent(ABC):
             if mcp_name in existing_mcps:
                 existing_mcp_toolset = self._remote_mcp_tools.get(mcp_name)
                 # for now we only check if the URL has changed
-                if existing_mcp_toolset and existing_mcp_toolset._connection_params.url != mcp_url:
+                if (
+                    existing_mcp_toolset
+                    and existing_mcp_toolset._connection_params.url != mcp_url
+                ):
                     # Create a new MCPToolset with the updated URL
-                    self._remote_mcp_tools[mcp_name] = await self.get_tools_async(mcp_servers_map[mcp_name])
+                    self._remote_mcp_tools[mcp_name] = await self.create_mcp_tool(
+                        mcp_servers_map[mcp_name]
+                    )
                     updated_mcps.append(mcp_name)
                     agent_invalidated = True
 
@@ -267,7 +323,6 @@ class ConsulEnabledAIAgent(ABC):
                 memory_service=InMemoryMemoryService(),
             )
 
-
     def remove_agent_connector(self, card_name: str) -> None:
         """
         Remove the AgentConnector for the specified agent name.
@@ -282,7 +337,9 @@ class ConsulEnabledAIAgent(ABC):
             del self.skills[card_name]
             logger.info(f"Removed agent connector for {card_name}")
         else:
-            logger.warning(f"Attempted to remove non-existent agent connector: {card_name}")
+            logger.warning(
+                f"Attempted to remove non-existent agent connector: {card_name}"
+            )
 
     def create_agent_connector(self, card: AgentCard) -> None:
         """
@@ -328,22 +385,20 @@ class ConsulEnabledAIAgent(ABC):
         Note - function updated 28 May 2025
         Summary of changes:
         1. Agent's invoke method is made async
-        2. All async calls (get_session, create_session, run_async) 
+        2. All async calls (get_session, create_session, run_async)
             are awaited inside invoke method
         3. task manager's on_send_task updated to await the invoke call
 
-        Reason - get_session and create_session are async in the 
-        "Current" Google ADK version and were synchronous earlier 
-        when this lecture was recorded. This is due to a recent change 
-        in the Google ADK code 
+        Reason - get_session and create_session are async in the
+        "Current" Google ADK version and were synchronous earlier
+        when this lecture was recorded. This is due to a recent change
+        in the Google ADK code
         https://github.com/google/adk-python/commit/1804ca39a678433293158ec066d44c30eeb8e23b
 
         """
         # Attempt to reuse an existing session
         session = await self._runner.session_service.get_session(
-            app_name=self._agent.name,
-            user_id=self._user_id,
-            session_id=session_id
+            app_name=self._agent.name, user_id=self._user_id, session_id=session_id
         )
         # Create new if not found
         if session is None:
@@ -351,21 +406,16 @@ class ConsulEnabledAIAgent(ABC):
                 app_name=self._agent.name,
                 user_id=self._user_id,
                 session_id=session_id,
-                state={}
+                state={},
             )
 
         # Wrap the user query in a types.Content message
-        content = types.Content(
-            role="user",
-            parts=[types.Part.from_text(text=query)]
-        )
+        content = types.Content(role="user", parts=[types.Part.from_text(text=query)])
 
         # 🚀 Run the agent using the Runner and collect the last event
         last_event = None
         async for event in self._runner.run_async(
-            user_id=self._user_id,
-            session_id=session.id,
-            new_message=content
+            user_id=self._user_id, session_id=session.id, new_message=content
         ):
             last_event = event
 
@@ -377,10 +427,7 @@ class ConsulEnabledAIAgent(ABC):
         return "\n".join([p.text for p in last_event.content.parts if p.text])
 
     async def _transform_text(
-            self,
-            text: str,
-            instruction: str,
-            tool_context: ToolContext
+        self, text: str, instruction: str, tool_context: ToolContext
     ) -> str:
         """
         Transform text using the LLM according to provided instructions.
@@ -403,9 +450,9 @@ class ConsulEnabledAIAgent(ABC):
 
     def _root_instruction(self, context: ReadonlyContext) -> str:
         """
-                System prompt function: returns detailed instruction text for the LLM,
-                including which tools it can use and a list of child agents with detailed skills.
-                """
+        System prompt function: returns detailed instruction text for the LLM,
+        including which tools it can use and a list of child agents with detailed skills.
+        """
         agent_list = "\n".join(f"- {name}" for name in self.connectors)
 
         # Build a detailed list of agents with their skills, descriptions, tags, instructions, and examples
@@ -416,15 +463,23 @@ class ConsulEnabledAIAgent(ABC):
                 continue
             skill_details = []
             for skill in skills:
-                skill_name = getattr(skill, 'name', getattr(skill, 'id', str(skill)))
-                skill_desc = getattr(skill, 'description', 'No description provided.')
-                skill_tags = getattr(skill, 'tags', [])
-                skill_instruction = getattr(skill, 'instruction', None)
-                skill_example = getattr(skill, 'examples', None)
+                skill_name = getattr(skill, "name", getattr(skill, "id", str(skill)))
+                skill_desc = getattr(skill, "description", "No description provided.")
+                skill_tags = getattr(skill, "tags", [])
+                skill_instruction = getattr(skill, "instruction", None)
+                skill_example = getattr(skill, "examples", None)
                 tags_str = f" [tags: {', '.join(skill_tags)}]" if skill_tags else ""
-                instruction_str = f"\n      Instruction: {skill_instruction}" if skill_instruction else ""
-                example_str = f"\n      Example: {skill_example}" if skill_example else ""
-                skill_details.append(f"  • {skill_name}:{tags_str}\n    Description: {skill_desc}{instruction_str}{example_str}")
+                instruction_str = (
+                    f"\n      Instruction: {skill_instruction}"
+                    if skill_instruction
+                    else ""
+                )
+                example_str = (
+                    f"\n      Example: {skill_example}" if skill_example else ""
+                )
+                skill_details.append(
+                    f"  • {skill_name}:{tags_str}\n    Description: {skill_desc}{instruction_str}{example_str}"
+                )
             agent_skills_list.append(f"- {name}:\n" + "\n".join(skill_details))
         agent_skills = "\n".join(agent_skills_list)
 
@@ -443,7 +498,8 @@ class ConsulEnabledAIAgent(ABC):
             "  additional agent, skill, or tool would be needed to complete the task successfully.\n"
             "- Respond directly only for simple greetings or clarification questions.\n\n"
             "Available agents:\n" + agent_list + "\n\n"
-            "Agent skills (with descriptions, tags, instructions, and examples):\n" + agent_skills
+            "Agent skills (with descriptions, tags, instructions, and examples):\n"
+            + agent_skills
         )
 
     # Tool to list all registered child agents
@@ -456,10 +512,7 @@ class ConsulEnabledAIAgent(ABC):
 
     # Tool to delegate a task to a specific child agent
     async def _delegate_task(
-            self,
-            agent_name: str,
-            message: str,
-            tool_context: ToolContext
+        self, agent_name: str, message: str, tool_context: ToolContext
     ) -> str:
         """
         Tool function: forwards the `message` to the specified child agent
@@ -486,10 +539,7 @@ class ConsulEnabledAIAgent(ABC):
         return ""
 
     # Tool to get the skills of a specific agent
-    def _agent_skills(
-            self,
-            agent_name: str
-    ) -> list:
+    def _agent_skills(self, agent_name: str) -> list:
         """
         Tool function: returns the list of skills available for the specified agent.
         Called by the LLM when it needs to determine which agent has the right capabilities
@@ -513,7 +563,9 @@ class ConsulEnabledAIAgent(ABC):
         Tool function: returns the current date and time as a string.
         """
         from datetime import datetime
-        return datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+
+        return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
 
 class ConsulTaskManager(InMemoryTaskManager):
     """
@@ -521,9 +573,10 @@ class ConsulTaskManager(InMemoryTaskManager):
     A2A JSON-RPC `tasks/send` endpoint, handling in-memory storage and
     response formatting.
     """
+
     def __init__(self, agent: ConsulEnabledAIAgent):
-        super().__init__()       # Initialize base in-memory storage
-        self.agent = agent       # Store our orchestrator logic
+        super().__init__()  # Initialize base in-memory storage
+        self.agent = agent  # Store our orchestrator logic
 
     def _get_user_text(self, request: SendTaskRequest) -> str:
         """

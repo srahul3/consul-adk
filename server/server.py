@@ -14,21 +14,25 @@
 # 🧱 Required Imports
 # -----------------------------------------------------------------------------
 
+# 🛠️ General utilities
+import json  # Used for printing the request payloads (for debugging)
+import logging  # Used to log errors and info messages
+
 # 🌐 Starlette is a lightweight web framework for building ASGI applications
-from starlette.applications import Starlette            # To create our web app
-from starlette.responses import JSONResponse            # To send responses as JSON
-from starlette.requests import Request                  # Represents incoming HTTP requests
+from starlette.applications import Starlette  # To create our web app
+from starlette.requests import Request  # Represents incoming HTTP requests
+from starlette.responses import JSONResponse  # To send responses as JSON
 
 # 📦 Importing our custom models and logic
-from models.agent import AgentCard                      # Describes the agent's identity and skills
+from models.agent import AgentCard  # Describes the agent's identity and skills
+from models.json_rpc import (  # JSON-RPC utilities for structured messaging
+    InternalError,
+    JSONRPCResponse,
+)
 from models.request import A2ARequest, SendTaskRequest  # Request models for tasks
-from models.json_rpc import JSONRPCResponse, InternalError  # JSON-RPC utilities for structured messaging
-from server import task_manager              # Our actual task handling logic (Gemini agent)
+from server import task_manager  # Our actual task handling logic (Gemini agent)
 
-# 🛠️ General utilities
-import json                                              # Used for printing the request payloads (for debugging)
-import logging                                           # Used to log errors and info messages
-logger = logging.getLogger(__name__)                     # Setup logger for this file
+logger = logging.getLogger(__name__)  # Setup logger for this file
 
 # 🕒 datetime import for serialization
 from datetime import datetime
@@ -54,7 +58,13 @@ def json_serializer(obj):
 # 🚀 A2AServer Class: The Core Server Logic
 # -----------------------------------------------------------------------------
 class A2AServer:
-    def __init__(self, host="0.0.0.0", port=5000, agent_card: AgentCard = None, task_manager: task_manager = None):
+    def __init__(
+        self,
+        host="0.0.0.0",
+        port=5000,
+        agent_card: AgentCard = None,
+        task_manager: task_manager = None,
+    ):
         """
         🔧 Constructor for our A2AServer
 
@@ -76,10 +86,14 @@ class A2AServer:
         self.app.add_route("/", self._handle_request, methods=["POST"])
 
         # 🔎 Register a route for agent discovery (metadata as JSON)
-        self.app.add_route("/.well-known/agent.json", self._get_agent_card, methods=["GET"])
+        self.app.add_route(
+            "/.well-known/agent.json", self._get_agent_card, methods=["GET"]
+        )
 
         # 📦 health check endpoint
-        self.app.add_route("/health", lambda request: JSONResponse({"status": "ok"}), methods=["GET"])
+        self.app.add_route(
+            "/health", lambda request: JSONResponse({"status": "ok"}), methods=["GET"]
+        )
 
     # -----------------------------------------------------------------------------
     # ▶️ start(): Launch the web server using uvicorn
@@ -94,6 +108,7 @@ class A2AServer:
 
         # Dynamically import uvicorn so it’s only loaded when needed
         import uvicorn
+
         uvicorn.run(self.app, host=self.host, port=self.port)
 
     # -----------------------------------------------------------------------------
@@ -123,7 +138,9 @@ class A2AServer:
         try:
             # Step 1: Parse incoming JSON body
             body = await request.json()
-            print("\n🔍 Incoming JSON:", json.dumps(body, indent=2))  # Log input for visibility
+            print(
+                "\n🔍 Incoming JSON:", json.dumps(body, indent=2)
+            )  # Log input for visibility
 
             # Step 2: Parse and validate request using discriminated union
             json_rpc = A2ARequest.validate_python(body)
@@ -141,8 +158,10 @@ class A2AServer:
             logger.error(f"Exception: {e}")
             # Return a JSON-RPC compliant error response if anything fails
             return JSONResponse(
-                JSONRPCResponse(id=None, error=InternalError(message=str(e))).model_dump(),
-                status_code=400
+                JSONRPCResponse(
+                    id=None, error=InternalError(message=str(e))
+                ).model_dump(),
+                status_code=400,
             )
 
     # -----------------------------------------------------------------------------
@@ -160,6 +179,8 @@ class A2AServer:
         """
         if isinstance(result, JSONRPCResponse):
             # jsonable_encoder automatically handles datetime and UUID
-            return JSONResponse(content=jsonable_encoder(result.model_dump(exclude_none=True)))
+            return JSONResponse(
+                content=jsonable_encoder(result.model_dump(exclude_none=True))
+            )
         else:
             raise ValueError("Invalid response type")
