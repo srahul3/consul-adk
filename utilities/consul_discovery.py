@@ -464,3 +464,70 @@ class ConsulDiscoveryClient:
             logger.info(f"Agent {agent.name} registered successfully with Consul.")
         except httpx.RequestError as e:
             logger.error(f"Failed to register agent {agent.name} with Consul: {e}")
+
+    async def get_kv_variable(self, variable: str) -> str | None:
+        """
+        Fetch a variable value from Consul KV store using the path pattern:
+        consul-adk/{self.id}/variables/{variable}
+
+        Args:
+            variable (str): The variable name to fetch from the KV store.
+
+        Returns:
+            str | None: The value of the variable if found, None if not found or on error.
+
+        Raises:
+            httpx.HTTPStatusError: If the HTTP request fails with a status error.
+            Exception: For other connection or parsing errors.
+        """
+        kv_path = f"consul-adk/{self.id}/variables/{variable}"
+        logger.info(f"Fetching {variable} from KV store at path: {kv_path}")
+
+        try:
+            headers = {}
+            if self.consul_token:
+                headers["X-Consul-Token"] = self.consul_token
+
+            async with httpx.AsyncClient() as client:
+                response = await client.get(
+                    f"{self.consul_address}/v1/kv/{kv_path}",
+                    headers=headers,
+                    timeout=30.0,
+                )
+
+                # If key doesn't exist, Consul returns 404
+                if response.status_code == 404:
+                    logger.warning(f"KV variable '{variable}' not found at path: {kv_path}")
+                    return None
+
+                response.raise_for_status()
+
+                # Parse the response
+                kv_data = response.json()
+
+                if not kv_data or len(kv_data) == 0:
+                    logger.warning(f"Empty response for KV variable '{variable}' at path: {kv_path}")
+                    return None
+
+                # Consul KV API returns a list of objects, get the first one
+                kv_entry = kv_data[0]
+
+                # The value is base64 encoded, decode it
+                import base64
+
+                encoded_value = kv_entry.get("Value")
+                if encoded_value:
+                    decoded_value = base64.b64decode(encoded_value).decode("utf-8")
+                    logger.info(f"Successfully retrieved KV variable '{variable}' from path: {kv_path}")
+                    return decoded_value
+                else:
+                    logger.warning(f"KV variable '{variable}' has no value at path: {kv_path}")
+                    return None
+
+        except httpx.HTTPStatusError as e:
+            logger.error(f"HTTP error fetching KV variable '{variable}' from path '{kv_path}': {e}")
+            raise
+        except Exception as e:
+            logger.error(f"Error fetching KV variable '{variable}' from path '{kv_path}': {e}")
+            raise
+

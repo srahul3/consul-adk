@@ -426,6 +426,10 @@ class ConsulEnabledAIAgent(ABC):
         # 📤 Extract and join all text responses into one string
         return "\n".join([p.text for p in last_event.content.parts if p.text])
 
+    # LLM instructions fetched from KV. This provides flexibility to tune it at runtime
+    def _description(self) -> str:
+        return self.discovery.get_kv_variable("description")
+
     def _root_instruction(self, context: ReadonlyContext) -> str:
         """
         System prompt function: returns detailed instruction text for the LLM,
@@ -461,20 +465,29 @@ class ConsulEnabledAIAgent(ABC):
             agent_skills_list.append(f"- {name}:\n" + "\n".join(skill_details))
         agent_skills = "\n".join(agent_skills_list)
 
-        return (
+        default_instr = (
             "You are an orchestrator agent that routes user queries to specialized child agents.\n\n"
             "IMPORTANT GUIDELINES:\n"
-            "- If required split the user query into multiple queries curated for each agent. Also do not hesitate to pipe the response of one query into the next task.\n"
+            "- If required split the user query into multiple queries curated for each agent.\n"
             "- Always break down the user query into a chain of thoughts and sub-tasks.\n"
-            "- Use pipe_agents() when you need to process a query through multiple agents in sequence, where each agent builds on the previous one's output\n"
             "- If a query requires multiple steps or skills, select and sequence multiple agents as needed.\n"
             "- For complex queries, execute tasks in sequence by invoking the right agent for each sub-task.\n"
             "- Always analyze the user query to determine the best agent(s) to handle it.\n"
             "- If unsure which agent to use, check their skills first.\n"
             "- When a task fails or cannot be completed, always provide a detailed explanation of:\n"
-            "- Be specific about missing capabilities - don't just say 'I can't do that', explain exactly what\n"
-            "  additional agent, skill, or tool would be needed to complete the task successfully.\n"
+            "- Be specific about missing capabilities - don't just say 'I can't do that', explain exactly which additional agent, skill, or tool would be needed to complete the task successfully.\n"
             "- Respond directly only for simple greetings or clarification questions.\n\n"
+        )
+
+        kv_instr = self.discovery.get_kv_variable("instruction")
+        if kv_instr and len(kv_instr) > 20:
+            logger.info("Using custom instruction from KV store")
+            instr = kv_instr
+        else:
+            instr = default_instr
+
+        return (
+            instr + "\n\n"
             "Available agents:\n" + agent_list + "\n\n"
             "Agent skills (with descriptions, tags, instructions, and examples):\n"
             + agent_skills
