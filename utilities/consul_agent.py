@@ -124,10 +124,10 @@ class ConsulEnabledAIAgent(ABC):
         # Start the Consul watcher in the background
         self.initialize()
 
-    def set_orchestrator(self, val: bool):
+    def _set_orchestrator(self, val: bool):
         self.is_orchestrator = val
 
-    def get_llm_tools(self) -> list[ToolUnion]:
+    def _get_llm_tools(self) -> list[ToolUnion]:
         """
         Returns the list of tools available to the LLM agent,
         including built-in tools and any user-defined tools.
@@ -147,7 +147,7 @@ class ConsulEnabledAIAgent(ABC):
             all_tools = self._user_defined_tools
         return all_tools
 
-    def append_user_defined_tool(self, tool: ToolUnion):
+    def _append_user_defined_tool(self, tool: ToolUnion):
         self._user_defined_tools.append(tool)
 
 
@@ -425,28 +425,6 @@ class ConsulEnabledAIAgent(ABC):
 
         # 📤 Extract and join all text responses into one string
         return "\n".join([p.text for p in last_event.content.parts if p.text])
-
-    async def _transform_text(
-        self, text: str, instruction: str, tool_context: ToolContext
-    ) -> str:
-        """
-        Transform text using the LLM according to provided instructions.
-        """
-        # Reuse existing session from tool context
-        state = tool_context.state
-        session_id = state.get("session_id", str(uuid.uuid4()))
-
-        # Create prompt for transformation
-        transform_prompt = (
-            f"Transform the following text according to these instructions:\n"
-            f"INSTRUCTIONS: {instruction}\n\n"
-            f"TEXT TO TRANSFORM:\n{text}\n\n"
-            f"TRANSFORMED TEXT:"
-        )
-
-        # Use the agent's invoke method to process the transformation
-        result = await self.invoke(transform_prompt, session_id)
-        return result
 
     def _root_instruction(self, context: ReadonlyContext) -> str:
         """
