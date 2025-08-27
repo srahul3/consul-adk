@@ -1,5 +1,5 @@
 # =============================================================================
-# Makefile for consul-ai-agent-sdk
+# Makefile for consul-adk
 # =============================================================================
 # Purpose: Automate common development tasks including building, testing,
 # linting, and deployment for the consul-adk project.
@@ -15,7 +15,7 @@
 # Project configuration
 PYTHON := python3
 PIP := pip3
-PACKAGE_NAME := consul-ai-agent-sdk
+PACKAGE_NAME := consul-adk
 TEST_DIR := tests
 SOURCE_DIRS := client models server utilities
 
@@ -30,7 +30,7 @@ NC := \033[0m # No Color
 # Help Target
 # =============================================================================
 help: ## Show this help message
-	@echo "$(BLUE)consul-ai-agent-sdk Makefile$(NC)"
+	@echo "$(BLUE)consul-adk Makefile$(NC)"
 	@echo "=================================="
 	@echo ""
 	@echo "$(GREEN)Available targets:$(NC)"
