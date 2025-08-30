@@ -136,7 +136,7 @@ class ConsulEnabledAIAgent(ABC):
         built_in_tools = [
             FunctionTool(self._list_agents),
             FunctionTool(self._agent_skills),
-            FunctionTool(self._delegate_task, is_async=True),
+            FunctionTool(self._delegate_task),
             FunctionTool(self._tell_time),
         ]
 
@@ -150,6 +150,8 @@ class ConsulEnabledAIAgent(ABC):
     def _append_user_defined_tool(self, tool: ToolUnion):
         self._user_defined_tools.append(tool)
 
+    def _clear_user_defined_tool(self):
+        self._user_defined_tools = []
 
     def get_remote_mcp_tools(self):
         """
