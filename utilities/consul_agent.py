@@ -429,10 +429,13 @@ class ConsulEnabledAIAgent(ABC):
         return "\n".join([p.text for p in last_event.content.parts if p.text])
 
     # LLM instructions fetched from KV. This provides flexibility to tune it at runtime
-    def _description(self) -> str:
-        return self.discovery.get_kv_variable("description")
+    async def _description(self) -> str:
+        desc = await self.discovery.get_kv_variable("description")
+        if desc:
+            return desc
+        return "Default agent description."
 
-    def _root_instruction(self, context: ReadonlyContext) -> str:
+    async def _root_instruction(self, context: ReadonlyContext) -> str:
         """
         System prompt function: returns detailed instruction text for the LLM,
         including which tools it can use and a list of child agents with detailed skills.
@@ -481,7 +484,7 @@ class ConsulEnabledAIAgent(ABC):
             "- Respond directly only for simple greetings or clarification questions.\n\n"
         )
 
-        kv_instr = self.discovery.get_kv_variable("instruction")
+        kv_instr = await self.discovery.get_kv_variable("instruction")
         if kv_instr and len(kv_instr) > 20:
             logger.info("Using custom instruction from KV store")
             instr = kv_instr
