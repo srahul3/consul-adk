@@ -17,6 +17,13 @@ source .venv/bin/activate
 # Prompt for new version
 read -p "Enter new semver version (e.g. 1.2.3): " NEW_VERSION
 
+# Validate semver format and also confirm with user
+if [[ ! $NEW_VERSION =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+  echo "Error: Version must be in semver format (e.g. 1.2.3)"
+  exit 1
+fi
+read -p "You entered version $NEW_VERSION. Is this correct? (y/n) " yn
+
 # Run tests
 make test
 
@@ -31,4 +38,7 @@ git tag "$NEW_VERSION"
 git push origin "$NEW_VERSION"
 
 echo "Release v$NEW_VERSION created and pushed to main."
+
+# create a new release on GitHub
+gh release create "$NEW_VERSION" --title "v$NEW_VERSION" --notes "Release v$NEW_VERSION"
 
