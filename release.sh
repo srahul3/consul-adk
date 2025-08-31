@@ -17,7 +17,7 @@ make setup-dev
 source .venv/bin/activate
 
 # read the current version from pyproject.toml
-CURRENT_VERSION=$(grep -oP '(?<=^version = ")[^"]*' pyproject.toml)
+CURRENT_VERSION=$(grep -o 'version = "[0-9]*\.[0-9]*\.[0-9]*"' pyproject.toml | head -1 | sed 's/version = "\([0-9]*\.[0-9]*\.[0-9]*\)"/\1/')
 echo "Current version is $CURRENT_VERSION"
 # Prompt for new version
 read -p "Enter new semver version (e.g. 1.2.3): " NEW_VERSION
@@ -46,4 +46,3 @@ echo "Release v$NEW_VERSION created and pushed to main."
 
 # create a new release on GitHub
 gh release create "$NEW_VERSION" --title "v$NEW_VERSION" --notes "Release v$NEW_VERSION"
-
