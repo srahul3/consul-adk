@@ -141,14 +141,14 @@ class ConsulEnabledAIAgent(ABC):
         ]
 
         # Combine built-in tools with MCP wrappers and user-defined tools
+        user_tools = list(self._user_defined_tools.values())
         if self.is_orchestrator:
-            all_tools = built_in_tools + self._user_defined_tools.values()
+            all_tools = built_in_tools + user_tools
         else:
-            all_tools = self._user_defined_tools.values()
+            all_tools = user_tools
 
         # adding remote mcp tools
-        # add each MCPToolset to the agent's tools
-        all_tools += self._remote_mcp_tools.values()
+        all_tools += list(self._remote_mcp_tools.values())
 
         return all_tools
 
