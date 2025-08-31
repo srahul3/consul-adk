@@ -16,6 +16,9 @@ fi
 make setup-dev
 source .venv/bin/activate
 
+# read the current version from pyproject.toml
+CURRENT_VERSION=$(grep -oP '(?<=^version = ")[^"]*' pyproject.toml)
+echo "Current version is $CURRENT_VERSION"
 # Prompt for new version
 read -p "Enter new semver version (e.g. 1.2.3): " NEW_VERSION
 
