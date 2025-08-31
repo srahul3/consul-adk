@@ -1,6 +1,8 @@
 #!/bin/bash
 set -e
 
+make clean
+
 # prompt if all the changes are committed. It is ok if they are not pushed
 if [[ -n $(git status --porcelain) ]]; then
   read -p "You have uncommitted changes. Do you want to continue? (y/n) " yn
