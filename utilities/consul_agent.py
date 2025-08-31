@@ -104,7 +104,7 @@ class ConsulEnabledAIAgent(ABC):
         self._mcp_wrappers = {}
 
         # User defined tools
-        self._user_defined_tools = []
+        self._user_defined_tools = {}
 
         # Build the internal LLM agent with our custom tools and instructions
         self._agent = self.build_agent()
@@ -142,16 +142,21 @@ class ConsulEnabledAIAgent(ABC):
 
         # Combine built-in tools with MCP wrappers and user-defined tools
         if self.is_orchestrator:
-            all_tools = built_in_tools + self._user_defined_tools
+            all_tools = built_in_tools + self._user_defined_tools.values()
         else:
-            all_tools = self._user_defined_tools
+            all_tools = self._user_defined_tools.values()
+
+        # adding remote mcp tools
+        # add each MCPToolset to the agent's tools
+        all_tools += self._remote_mcp_tools.values()
+
         return all_tools
 
-    def _append_user_defined_tool(self, tool: ToolUnion):
-        self._user_defined_tools.append(tool)
+    def _append_user_defined_tool(self, name, tool: ToolUnion):
+        self._user_defined_tools[name] = tool
 
     def _clear_user_defined_tool(self):
-        self._user_defined_tools = []
+        self._user_defined_tools = {}
 
     def get_remote_mcp_tools(self):
         """
